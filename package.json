@@ -1,0 +1,38 @@
+{
+  "name": "baby-bot2",
+  "version": "2.0.0",
+  "description": "Baby Bot 2.0",
+  "main": "start.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "node src/start.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codystevelarson/baby-bot2.git"
+  },
+  "keywords": [
+    "Discord"
+  ],
+  "author": "Cody Larson",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/codystevelarson/baby-bot2/issues"
+  },
+  "homepage": "https://github.com/codystevelarson/baby-bot2#readme",
+  "dependencies": {
+    "axios": "^0.24.0",
+    "discord.js": "^13.3.1",
+    "dotenv": "^10.0.0",
+    "express": "^4.17.1",
+    "ffmpeg-static": "^4.4.0",
+    "http": "^0.0.1-security",
+    "node": "^17.1.0",
+    "nvm": "^0.0.4",
+    "opusscript": "^0.0.8",
+    "ytdl-core": "^4.9.1"
+  }
+}
