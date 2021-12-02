@@ -5,29 +5,17 @@ const {
   createAudioPlayer,
   NoSubscriberBehavior,
   AudioPlayerStatus,
-  AudioPlayerState,
-  AudioResource,
   createAudioResource,
   StreamType,
-  demuxProbe,
 } = require("@discordjs/voice");
 const ytdl = require("ytdl-core");
-const { createReadStream, createWriteStream } = require("fs");
 const { join } = require("path");
-
-// const ActivityTypes = {
-//   PLAYING = 0,
-//   STREAMING = 1,
-//   LISTENING = 2,
-//   WATCHING = 3,
-//   CUSTOM = 4,
-//   COMPETING = 5,
-// }
 
 class Bot {
   _client;
   _token;
   _id;
+  snitches = [];
 
   constructor(token, id) {
     this._token = token;
@@ -50,6 +38,7 @@ class Bot {
     this._client.on("messageCreate", this.onMessage);
     this._client.on("messageDelete", this.onMessageDelete);
     this._client.on("typingStart", this.onStartTyping);
+    this._client.on("interactionCreate", this.onInteraction);
   }
 
   start = () => {
@@ -95,7 +84,6 @@ class Bot {
       msg.react("👶");
       msg.reply("(●'◡'●)");
     }
-    // this.playYoutubeUrl(msg, msg.content);
   };
 
   /**
@@ -103,20 +91,52 @@ class Bot {
    * from any text channel Bot has access to
    */
   onMessageDelete = (msg) => {
-    // Return if message is from the bot itself
-    if (msg.author.id == process.env.BOT_ID) return;
-
+    if (this.snitches.includes(msg.author.id)) {
+      msg.channel.send(
+        `${msg.author.username} deleted a message: ***${msg.content}***`
+      );
+    }
     console.log(`${msg.author.username}:[DELETED]: ${msg.content}`);
   };
 
-  // User starts typing in channel
+  /**
+   * User starts typing in channel
+   */
   onStartTyping = (typing) => {
+    if (this.snitches.includes(typing.user.id)) {
+      typing.channel.send(`${typing.user.username} is typing`);
+    }
     console.log(`${typing.user.username} typing in ${typing.channel.name}`);
+  };
+
+  /**
+   * Bot actions on interaction
+   * from any text channel Bot has access to
+   */
+  onInteraction = (cmd) => {
+    cmd.isCommand() ? console.log("command") : console.log("no");
+    switch (cmd.commandName) {
+      case "p":
+        this.playYoutubeUrlCommand(cmd, cmd.options.getString("url"));
+        break;
+      case "stop":
+        cmd.reply("👌");
+        this.disconnectFromVoice(cmd.member.voice.channel);
+        break;
+      case "snitch":
+        let user = cmd.options.getUser("user");
+        this.registerSnitch(user);
+        cmd.reply(`Snitching on ${user.username}`);
+        break;
+      default:
+        cmd.reply("🤷‍♂️");
+        return;
+    }
   };
 
   // Connect to voice channel
   connectToVoice = async (channel) => {
-    if (!channel || !channel.isVoice()) return;
+    if (!channel || !channel.isVoice()) return null;
 
     // Check for voice connection
     let connection = getVoiceConnection(channel.guild.id);
@@ -173,29 +193,26 @@ class Bot {
 
   // Connects to voice channel
   // plays a youtube video's audio via url
-  playYoutubeUrl = async (msg, url) => {
+  playYoutubeUrlCommand = async (cmd, url) => {
     // Validate url
     if (!ytdl.validateURL(url)) {
-      msg.react("❌");
-      msg.react("🔗");
+      cmd.reply({ content: "Bad url", ephemeral: true });
       return;
     }
 
     // Get and validate info
     let info = await ytdl.getInfo(url);
     if (!info) {
-      msg.react("❌");
-      msg.react("🧠");
+      cmd.reply({ content: "Couldn't find video info", ephemeral: true });
       return;
     }
-    msg.react("👍");
 
     // Get stream
     let audio = ytdl(url, {
       filter: "audioonly",
-      liveBuffer: 3000,
-      formats: info.formats,
-      quality: "highestaudio",
+      // liveBuffer: 3000,
+      // formats: info.formats,
+      // quality: "highestaudio",
     });
 
     // Create audio resource with stream
@@ -207,30 +224,41 @@ class Bot {
     let player = this.getAudioPlayer();
 
     // Add player events
-    player.on("stateChange", (oldState, newState) => {
+    player.on("stateChange", async (oldState, newState) => {
       // Starts playing
       if (
         oldState.status == AudioPlayerStatus.Buffering &&
         newState.status == AudioPlayerStatus.Playing
       ) {
-        msg.react("🎶");
+        cmd.reply(`🎶 - ${info.videoDetails.title}`);
       }
       // Stops playing
       if (
         oldState.status == AudioPlayerStatus.Playing &&
         newState.status == AudioPlayerStatus.Idle
       ) {
-        this.disconnectFromVoice(msg.member.voice.channel);
-        msg.react("✅");
+        this.disconnectFromVoice(cmd.member.voice.channel);
+        cmd.fetchReply().then((msg) => msg.react("✅"));
       }
     });
 
     // Subscribe connection to player
-    this.connectToVoice(msg.member.voice.channel).then((connection) => {
+    this.connectToVoice(cmd.member.voice?.channel).then(async (connection) => {
+      if (!connection) {
+        cmd.reply({
+          content: "Must be in voice channel to play audio",
+          ephemeral: true,
+        });
+        return;
+      }
       // Play
       connection.subscribe(player);
       player.play(resource);
     });
+  };
+
+  registerSnitch = (user) => {
+    this.snitches.push(user.id);
   };
 }
 

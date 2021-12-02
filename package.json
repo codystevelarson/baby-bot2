@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node src/start.js",
+    "cmd": "node src/registerCommands.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -24,8 +25,11 @@
   },
   "homepage": "https://github.com/codystevelarson/baby-bot2#readme",
   "dependencies": {
+    "@discordjs/builders": "^0.8.2",
+    "@discordjs/rest": "^0.1.0-canary.0",
     "@discordjs/voice": "^0.7.5",
     "axios": "^0.24.0",
+    "discord-api-types": "^0.25.2",
     "discord.js": "^13.3.1",
     "dotenv": "^10.0.0",
     "express": "^4.17.1",
