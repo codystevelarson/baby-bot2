@@ -15,6 +15,9 @@ class Bot {
   _client;
   _token;
   _id;
+  players = {};
+  playing = {};
+  queue = {};
   snitches = [];
 
   constructor(token, id) {
@@ -116,12 +119,36 @@ class Bot {
   onInteraction = (cmd) => {
     cmd.isCommand() ? console.log("command") : console.log("no");
     switch (cmd.commandName) {
+      case "playing":
+        this.getPlaying(cmd);
+        break;
+      case "play":
       case "p":
         this.playYoutubeUrlCommand(cmd, cmd.options.getString("url"));
         break;
       case "stop":
-        cmd.reply("👌");
+        cmd.reply("🛑");
         this.disconnectFromVoice(cmd.member.voice.channel);
+        break;
+      case "pause":
+        this.pauseAudio(cmd);
+        break;
+      case "unpause":
+        this.resumeAudio(cmd);
+        break;
+      case "queue":
+        this.getQueue(cmd);
+        break;
+      case "clear":
+        this.clearAudioQueue(cmd);
+        cmd.reply("💨");
+        break;
+      case "next":
+        if (this.stopAudioPlayer(cmd.member.voice.channel.id)) {
+          cmd.reply("⏭");
+        } else {
+          cmd.reply("Nothing in queue 👻");
+        }
         break;
       case "snitch":
         let user = cmd.options.getUser("user");
@@ -183,6 +210,31 @@ class Bot {
     return player;
   };
 
+  stopAudioPlayer = (channelId) => {
+    let player = this.players[channelId];
+    if (!player) {
+      return false;
+    }
+    player.stop();
+    this.players[channelId] = null;
+    console.log("Stopped and removed player for", channelId);
+    return true;
+  };
+
+  isPlaying = (channelId) => {
+    let playing =
+      this.players[channelId]?.state?.status == AudioPlayerStatus.Playing
+        ? true
+        : false;
+    console.log(`${channelId} currently playing:`, playing);
+    return playing;
+  };
+
+  saveAudioPlayer = (player, channelId) => {
+    console.log("Saving player for", channelId);
+    this.players[channelId] = player;
+  };
+
   // Creates an audio resource from a file name in the /assets/audio dir
   getResourceFromFile = (filename) => {
     let resource = createAudioResource(
@@ -193,7 +245,7 @@ class Bot {
 
   // Connects to voice channel
   // plays a youtube video's audio via url
-  playYoutubeUrlCommand = async (cmd, url) => {
+  playYoutubeUrlCommand = async (cmd, url, begin) => {
     // Validate url
     if (!ytdl.validateURL(url)) {
       cmd.reply({ content: "Bad url", ephemeral: true });
@@ -207,18 +259,31 @@ class Bot {
       return;
     }
 
+    // Check if currently playing to add command to queue
+    if (this.isPlaying(cmd.member.voice.channel.id)) {
+      cmd.reply(`📝 ***Queued - ${info.videoDetails.title}***`);
+      let next = cmd.options.getBoolean("next") ?? false;
+      this.queueAudio(cmd, url, next, info);
+      return;
+    }
+
     // Get stream
     let audio = ytdl(url, {
       filter: "audioonly",
-      // liveBuffer: 3000,
-      // formats: info.formats,
-      // quality: "highestaudio",
+      begin: begin ?? 0,
     });
 
     // Create audio resource with stream
     let resource = createAudioResource(audio, {
       inputType: StreamType.WebmOpus,
+      inlineVolume: true,
     });
+
+    // Get and set volume
+    let vol = cmd.options.getInteger("volume")
+      ? cmd.options.getInteger("volume") / 10
+      : 1;
+    resource.volume.setVolume(vol);
 
     // Create audio player
     let player = this.getAudioPlayer();
@@ -230,15 +295,38 @@ class Bot {
         oldState.status == AudioPlayerStatus.Buffering &&
         newState.status == AudioPlayerStatus.Playing
       ) {
-        cmd.reply(`🎶 - ${info.videoDetails.title}`);
+        let reply = `🎶 - ${info.videoDetails.title}`;
+        cmd.replied ? cmd.editReply(reply) : cmd.reply(reply);
+      }
+      if (
+        oldState.status == AudioPlayerStatus.Playing &&
+        newState.status == AudioPlayerStatus.Paused
+      ) {
+        let elapsed = millisecondsToHuman(resource.playbackDuration);
+        console.log("paused at", elapsed);
+        this.playing[cmd.member.voice.channel.id].resume = elapsed;
       }
       // Stops playing
       if (
         oldState.status == AudioPlayerStatus.Playing &&
         newState.status == AudioPlayerStatus.Idle
       ) {
-        this.disconnectFromVoice(cmd.member.voice.channel);
+        // Reply
         cmd.fetchReply().then((msg) => msg.react("✅"));
+
+        // Check Queue if audio ended
+        // if queue play next
+        if (resource.ended) {
+          console.log("Audio ended", resource.ended);
+          if (this.playNext(cmd.member.voice.channel.id)) return;
+        }
+
+        // Nothing in queue
+        // Disconnect from voice and remove audio player
+        console.log("Disconnecting from", cmd.member.voice.channel.id);
+        this.disconnectFromVoice(cmd.member.voice.channel);
+        this.players[cmd.member.voice.channel.id] = null;
+        this.playing[cmd.member.voice.channel.id] = null;
       }
     });
 
@@ -254,12 +342,124 @@ class Bot {
       // Play
       connection.subscribe(player);
       player.play(resource);
+      // Add player to list
+      this.saveAudioPlayer(player, cmd.member.voice.channel.id);
+      // Add playing
+      this.playing[cmd.member.voice.channel.id] = { cmd, url, info };
     });
+  };
+
+  pauseAudio = (cmd) => {
+    let player = this.players[cmd.member.voice.channel.id];
+    if (!player) return false;
+
+    player.pause();
+    this.playing[cmd.member.voice.channel.id].cmd
+      .fetchReply()
+      .then((msg) => msg.react("⏸"));
+    cmd.reply({ content: "Paused", ephemeral: true });
+  };
+
+  resumeAudio = (cmd) => {
+    let player = this.players[cmd.member.voice.channel.id];
+    if (!player) {
+      cmd.reply("Nothing is playing 🙉");
+      return false;
+    }
+
+    let playing = this.playing[cmd.member.voice.channel.id];
+    this.playYoutubeUrlCommand(cmd, playing.url, playing.resume);
+    playing.cmd.fetchReply().then((msg) => {
+      msg.reactions.cache.get("⏸").remove();
+      msg.react("▶");
+    });
+  };
+
+  // Plays next
+  playNext = (channelId) => {
+    console.log("Playing next for", channelId);
+    // Get queue
+    let queue = this.queue[channelId];
+    if (!queue?.length) {
+      console.log("Nothing in queue for", channelId);
+      return false;
+    }
+
+    // Get next
+    let audioItem = queue[0];
+
+    console.log("audio item", audioItem);
+    // Play next in queue
+    this.playYoutubeUrlCommand(audioItem.cmd, audioItem.url);
+
+    // Remove next
+    this.queue[channelId].shift();
+
+    // Return playing next is true!
+    return true;
+  };
+
+  getPlaying = (cmd) => {
+    let playing = this.playing[cmd.member.voice.channel.id];
+    let content = playing
+      ? `***Playing - ${playing.info.videoDetails.title}***`
+      : "🙉";
+
+    cmd.reply({ content, ephemeral: true });
+  };
+
+  queueAudio = (cmd, url, next, info) => {
+    // Get queue or default
+    let channelId = cmd.member.voice.channel.id;
+    let queue = this.queue[channelId] ?? [];
+
+    let audioItem = {
+      cmd,
+      url,
+      info,
+    };
+
+    // Add command and url to queue
+    next ? queue.unshift(audioItem) : queue.push(audioItem);
+    // Save queue
+    this.queue[channelId] = queue;
+  };
+
+  getQueue = (cmd) => {
+    let queue = this.queue[cmd.member.voice.channel.id];
+    if (!queue?.length) {
+      cmd.reply("Nonthing in queue 👻");
+      return;
+    }
+    let nextTracks = queue
+      .map((item) => item.info.videoDetails.title)
+      .join("\n");
+    cmd.reply(`Up Next: ${nextTracks}`);
+  };
+
+  clearAudioQueue = (cmd) => {
+    console.log("Clearing Queue for", cmd.member.voice.channel.id);
+    this.queue[cmd.member.voice.channel.id] = [];
   };
 
   registerSnitch = (user) => {
     this.snitches.push(user.id);
   };
+}
+
+function millisecondsToHuman(ms) {
+  const seconds = Math.floor((ms / 1000) % 60);
+  const minutes = Math.floor((ms / 1000 / 60) % 60);
+  const hours = Math.floor((ms / 1000 / 3600) % 24);
+
+  const humanized = [
+    "0ms",
+    `${seconds.toString()}s`,
+    `${minutes.toString()}m`,
+    `${hours.toString()}h`,
+  ].join(",");
+
+  return humanized;
 }
 
 module.exports = Bot;
