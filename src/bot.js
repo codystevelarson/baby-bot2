@@ -144,6 +144,9 @@ class Bot {
         cmd.reply("💨");
         break;
       case "next":
+        let playing = this.playing[cmd.member.voice.channel.id];
+        console.log(playing);
+        if (playing) playing.cmd.fetchReply().then((msg) => msg.react("⏭"));
         if (this.stopAudioPlayer(cmd.member.voice.channel.id)) {
           cmd.reply("⏭");
         } else {
@@ -439,6 +442,13 @@ class Bot {
 
   clearAudioQueue = (cmd) => {
     console.log("Clearing Queue for", cmd.member.voice.channel.id);
+    if (this.queue[cmd.member.voice.channel.id]?.length) {
+      Promise.all(
+        this.queue[cmd.member.voice.channel.id].map((item) =>
+          item.cmd.deleteReply()
+        )
+      );
+    }
     this.queue[cmd.member.voice.channel.id] = [];
   };
 
