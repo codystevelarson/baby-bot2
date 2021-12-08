@@ -4,7 +4,7 @@ const data = new SlashCommandBuilder()
   .setName("play")
   .setDescription("Plays audio in a voice channel")
   .addStringOption((option) =>
-    option.setName("url").setDescription("Youtube Url").setRequired(true)
+    option.setName("url").setDescription("Youtube Url").setRequired(false)
   )
   .addIntegerOption((option) =>
     option

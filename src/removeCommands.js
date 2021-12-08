@@ -11,14 +11,14 @@ const removeBotCommands = async () => {
 
     await rest
       .get(
-        Routes.applicationGuildCommands(process.env.BOT_ID, process.env.GUILD_A)
+        Routes.applicationGuildCommands(process.env.BOT_ID, process.env.GUILD_B)
       )
       .then((data) => {
         const promises = [];
         for (const command of data) {
           const deleteUrl = `${Routes.applicationGuildCommands(
             process.env.BOT_ID,
-            process.env.GUILD_A
+            process.env.GUILD_B
           )}/${command.id}`;
           promises.push(rest.delete(deleteUrl));
         }

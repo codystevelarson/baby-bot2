@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/start.js",
     "cmd": "node src/registerCommands.js",
+    "emoji": "node src/data/emojis.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

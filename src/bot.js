@@ -10,6 +10,8 @@ const {
 } = require("@discordjs/voice");
 const ytdl = require("ytdl-core");
 const { join } = require("path");
+const fs = require("fs");
+const getRandomEmoji = require("./data/emojis");
 
 class Bot {
   _client;
@@ -117,14 +119,56 @@ class Bot {
    * from any text channel Bot has access to
    */
   onInteraction = (cmd) => {
-    cmd.isCommand() ? console.log("command") : console.log("no");
+    cmd.isCommand()
+      ? console.log("command", cmd.commandName)
+      : console.log("not command");
+
+    // Text commands
+    switch (cmd.commandName) {
+      case "think":
+        this.think(cmd);
+        return;
+      case "queue":
+        this.getQueue(cmd);
+        return;
+      case "snitch":
+        let user = cmd.options.getUser("user");
+        this.registerSnitch(user);
+        cmd.reply(`Snitching on ${user.username}`);
+        break;
+      default:
+        break;
+    }
+
+    // Validate voice channel commands
+    let voiceId = cmdVId(cmd);
+    if (!voiceId) {
+      cmd.reply({
+        content: "Must be in voice channel to play audio",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Voice commands
     switch (cmd.commandName) {
       case "playing":
         this.getPlaying(cmd);
         break;
       case "play":
       case "p":
-        this.playYoutubeUrlCommand(cmd, cmd.options.getString("url"));
+        let url = cmd.options.getString("url");
+        // If resuming queue
+        if (!url) {
+          if (this.playNext(voiceId)) {
+            cmd.reply("▶📃");
+            return;
+          }
+        }
+        // Defer reply for more time
+        // Future replies must be edit/delete/followUp
+        cmd.deferReply();
+        this.playYoutubeUrlCommand(cmd, url);
         break;
       case "stop":
         cmd.reply("🛑");
@@ -136,28 +180,23 @@ class Bot {
       case "unpause":
         this.resumeAudio(cmd);
         break;
-      case "queue":
-        this.getQueue(cmd);
-        break;
       case "clear":
         this.clearAudioQueue(cmd);
         cmd.reply("💨");
         break;
       case "next":
-        let playing = this.playing[cmd.member.voice.channel.id];
+        let playing = this.playing[voiceId];
         console.log(playing);
         if (playing) playing.cmd.fetchReply().then((msg) => msg.react("⏭"));
-        if (this.stopAudioPlayer(cmd.member.voice.channel.id)) {
+        if (this.stopAudioPlayer(voiceId)) {
           cmd.reply("⏭");
         } else {
           cmd.reply("Nothing in queue 👻");
         }
         break;
-      case "snitch":
-        let user = cmd.options.getUser("user");
-        this.registerSnitch(user);
-        cmd.reply(`Snitching on ${user.username}`);
-        break;
+      case "playlist":
+        this.queuePlaylist(cmd);
+        return;
       default:
         cmd.reply("🤷‍♂️");
         return;
@@ -200,16 +239,6 @@ class Bot {
         noSubscriber: NoSubscriberBehavior.Pause,
       },
     });
-    // Set error handling
-    player.on("error", (error) => {
-      console.error(
-        "Error:",
-        error.message,
-        "with resource",
-        error.resource.metadata?.title
-      );
-    });
-
     return player;
   };
 
@@ -249,24 +278,25 @@ class Bot {
   // Connects to voice channel
   // plays a youtube video's audio via url
   playYoutubeUrlCommand = async (cmd, url, begin) => {
+    let voiceId = cmdVId(cmd);
     // Validate url
     if (!ytdl.validateURL(url)) {
-      cmd.reply({ content: "Bad url", ephemeral: true });
+      cmd.editReply({ content: "👎🔗", ephemeral: true });
       return;
     }
 
     // Get and validate info
     let info = await ytdl.getInfo(url);
     if (!info) {
-      cmd.reply({ content: "Couldn't find video info", ephemeral: true });
+      cmd.editReply({ content: "Couldn't find video info", ephemeral: true });
       return;
     }
 
     // Check if currently playing to add command to queue
-    if (this.isPlaying(cmd.member.voice.channel.id)) {
-      cmd.reply(`📝 ***Queued - ${info.videoDetails.title}***`);
+    if (this.isPlaying(voiceId)) {
+      cmd.editReply(`📝 ***Queued - ${info.videoDetails.title}***`);
       let next = cmd.options.getBoolean("next") ?? false;
-      this.queueAudio(cmd, url, next, info);
+      this.queueAudio(cmd, url, info, next);
       return;
     }
 
@@ -291,6 +321,24 @@ class Bot {
     // Create audio player
     let player = this.getAudioPlayer();
 
+    // Set error handling
+    player.on("error", (error) => {
+      console.error("Error:", error.message, "with resource", error.resource);
+      // Reply
+      cmd.fetchReply().then((msg) => msg.react("❌"));
+
+      // Check Queue if audio ended
+      // if queue play next
+      if (this.playNext(voiceId)) return;
+
+      // Nothing in queue
+      // Disconnect from voice and remove audio player
+      console.log("Disconnecting from", voiceId);
+      this.disconnectFromVoice(cmd.member.voice.channel);
+      this.players[voiceId] = null;
+      this.playing[voiceId] = null;
+    });
+
     // Add player events
     player.on("stateChange", async (oldState, newState) => {
       // Starts playing
@@ -299,7 +347,7 @@ class Bot {
         newState.status == AudioPlayerStatus.Playing
       ) {
         let reply = `🎶 - ${info.videoDetails.title}`;
-        cmd.replied ? cmd.editReply(reply) : cmd.reply(reply);
+        cmd.editReply(reply);
       }
       if (
         oldState.status == AudioPlayerStatus.Playing &&
@@ -307,7 +355,7 @@ class Bot {
       ) {
         let elapsed = millisecondsToHuman(resource.playbackDuration);
         console.log("paused at", elapsed);
-        this.playing[cmd.member.voice.channel.id].resume = elapsed;
+        this.playing[voiceId].resume = elapsed;
       }
       // Stops playing
       if (
@@ -321,56 +369,58 @@ class Bot {
         // if queue play next
         if (resource.ended) {
           console.log("Audio ended", resource.ended);
-          if (this.playNext(cmd.member.voice.channel.id)) return;
+          if (this.playNext(voiceId)) return;
         }
 
         // Nothing in queue
         // Disconnect from voice and remove audio player
-        console.log("Disconnecting from", cmd.member.voice.channel.id);
+        console.log("Disconnecting from", voiceId);
         this.disconnectFromVoice(cmd.member.voice.channel);
-        this.players[cmd.member.voice.channel.id] = null;
-        this.playing[cmd.member.voice.channel.id] = null;
+        this.players[voiceId] = null;
+        this.playing[voiceId] = null;
       }
     });
 
     // Subscribe connection to player
     this.connectToVoice(cmd.member.voice?.channel).then(async (connection) => {
       if (!connection) {
-        cmd.reply({
+        cmd.editReply({
           content: "Must be in voice channel to play audio",
           ephemeral: true,
         });
         return;
       }
+
       // Play
       connection.subscribe(player);
       player.play(resource);
       // Add player to list
-      this.saveAudioPlayer(player, cmd.member.voice.channel.id);
+      this.saveAudioPlayer(player, voiceId);
       // Add playing
-      this.playing[cmd.member.voice.channel.id] = { cmd, url, info };
+      this.playing[voiceId] = { cmd, url, info };
     });
   };
 
   pauseAudio = (cmd) => {
-    let player = this.players[cmd.member.voice.channel.id];
+    const voiceId = cmdVId(cmd);
+    let player = this.players[voiceId];
     if (!player) return false;
 
     player.pause();
-    this.playing[cmd.member.voice.channel.id].cmd
-      .fetchReply()
-      .then((msg) => msg.react("⏸"));
+    this.playing[voiceId].cmd.fetchReply().then((msg) => msg.react("⏸"));
     cmd.reply({ content: "Paused", ephemeral: true });
   };
 
   resumeAudio = (cmd) => {
-    let player = this.players[cmd.member.voice.channel.id];
+    const voiceId = cmdVId(cmd);
+
+    let player = this.players[voiceId];
     if (!player) {
       cmd.reply("Nothing is playing 🙉");
       return false;
     }
 
-    let playing = this.playing[cmd.member.voice.channel.id];
+    let playing = this.playing[voiceId];
     this.playYoutubeUrlCommand(cmd, playing.url, playing.resume);
     playing.cmd.fetchReply().then((msg) => {
       msg.reactions.cache.get("⏸").remove();
@@ -403,7 +453,7 @@ class Bot {
   };
 
   getPlaying = (cmd) => {
-    let playing = this.playing[cmd.member.voice.channel.id];
+    let playing = this.playing[cmdVId(cmd)];
     let content = playing
       ? `***Playing - ${playing.info.videoDetails.title}***`
       : "🙉";
@@ -411,9 +461,9 @@ class Bot {
     cmd.reply({ content, ephemeral: true });
   };
 
-  queueAudio = (cmd, url, next, info) => {
+  queueAudio = (cmd, url, info, next) => {
     // Get queue or default
-    let channelId = cmd.member.voice.channel.id;
+    let channelId = cmdVId(cmd);
     let queue = this.queue[channelId] ?? [];
 
     let audioItem = {
@@ -428,36 +478,79 @@ class Bot {
     this.queue[channelId] = queue;
   };
 
+  queuePlaylist = async (cmd) => {
+    await cmd.deferReply();
+    let voiceId = cmdVId(cmd);
+    let name = cmd.options.getString("name");
+    // Static files
+    const playlist = require(`./playlists/${name}.js`);
+    if (playlist) {
+      cmd.editReply("Loading tracks...");
+      this.clearAudioQueue(cmd);
+      await playlist.forEach(async (url, idx) => {
+        // Get and validate info
+        let info = await ytdl.getInfo(url);
+        if (!info) {
+          cmd.editReply({
+            content: "Couldn't find video info",
+            ephemeral: true,
+          });
+          return;
+        }
+        this.queueAudio(cmd, url, info);
+        if (idx == playlist.length - 1) {
+          this.playNext(voiceId);
+        }
+      });
+
+      return;
+    }
+    cmd.editReply("🤷‍♂️📃");
+  };
+
   getQueue = (cmd) => {
-    let queue = this.queue[cmd.member.voice.channel.id];
+    let queue = this.queue[cmdVId(cmd)];
     if (!queue?.length) {
-      cmd.reply("Nonthing in queue 👻");
+      cmd.reply({ content: "Nonthing in queue 👻", ephemeral: true });
       return;
     }
     let nextTracks = queue
-      .map((item) => item.info.videoDetails.title)
+      .map((item, idx) =>
+        idx == 0
+          ? `***${item.info.videoDetails.title}***`
+          : item.info.videoDetails.title
+      )
       .join("\n");
-    cmd.reply(`Up Next: ${nextTracks}`);
+    cmd.reply(`***Up Next:*** ${nextTracks}`);
   };
 
   clearAudioQueue = (cmd) => {
-    console.log("Clearing Queue for", cmd.member.voice.channel.id);
-    if (this.queue[cmd.member.voice.channel.id]?.length) {
-      Promise.all(
-        this.queue[cmd.member.voice.channel.id].map((item) =>
-          item.cmd.deleteReply()
-        )
-      );
+    const voiceId = cmdVId(cmd);
+    console.log("Clearing Queue for", voiceId);
+    if (this.queue[voiceId]?.length) {
+      Promise.all(this.queue[voiceId].map((item) => item.cmd.deleteReply()));
     }
-    this.queue[cmd.member.voice.channel.id] = [];
+    this.queue[voiceId] = [];
   };
 
   registerSnitch = (user) => {
     this.snitches.push(user.id);
   };
-}
 
-function millisecondsToHuman(ms) {
+  think = (cmd) => {
+    const max = 20;
+    cmd.deferReply();
+    let power = cmd.options.getInteger("level") ?? 1;
+    power = power > max ? max * 1000 : power < 1 ? 1000 : power * 1000;
+    setTimeout(() => {
+      let emojis = getRandomEmoji(power / 1000);
+      cmd.editReply(`🤖 💭 ${emojis}`);
+    }, power);
+  };
+}
+const cmdVId = (cmd) => cmd?.member?.voice?.channel?.id ?? null;
+
+const millisecondsToHuman = (ms) => {
   const seconds = Math.floor((ms / 1000) % 60);
   const minutes = Math.floor((ms / 1000 / 60) % 60);
   const hours = Math.floor((ms / 1000 / 3600) % 24);
@@ -470,6 +563,6 @@ function millisecondsToHuman(ms) {
   ].join(",");
 
   return humanized;
-}
+};
 
 module.exports = Bot;
