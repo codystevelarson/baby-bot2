@@ -9,6 +9,7 @@ const data = new SlashCommandBuilder()
       .setDescription("Playlist that will play")
       .setRequired(true)
       .addChoice("Loading", "loading")
+      .addChoice("Haircuts for Men", "haircutsformen")
   );
 
 module.exports = data;

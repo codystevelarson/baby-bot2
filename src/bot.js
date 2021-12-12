@@ -10,7 +10,6 @@ const {
 } = require("@discordjs/voice");
 const ytdl = require("ytdl-core");
 const { join } = require("path");
-const fs = require("fs");
 const getRandomEmoji = require("./data/emojis");
 
 class Bot {
@@ -38,6 +37,7 @@ class Bot {
         Discord.Intents.FLAGS.DIRECT_MESSAGE_TYPING,
       ],
     });
+
     // Triggers
     this._client.once("ready", this.onReady);
     this._client.on("messageCreate", this.onMessage);
@@ -128,14 +128,14 @@ class Bot {
       case "think":
         this.think(cmd);
         return;
-      case "queue":
-        this.getQueue(cmd);
-        return;
       case "snitch":
         let user = cmd.options.getUser("user");
         this.registerSnitch(user);
         cmd.reply(`Snitching on ${user.username}`);
-        break;
+        return;
+      case "guild":
+        this.sendGuildInfo(cmd);
+        return;
       default:
         break;
     }
@@ -181,7 +181,7 @@ class Bot {
         this.resumeAudio(cmd);
         break;
       case "clear":
-        this.clearAudioQueue(cmd);
+        this.clearAudioQueue(cmdVId(cmd));
         cmd.reply("💨");
         break;
       case "next":
@@ -197,26 +197,54 @@ class Bot {
       case "playlist":
         this.queuePlaylist(cmd);
         return;
+      case "queue":
+        this.getQueue(cmd);
+        return;
       default:
         cmd.reply("🤷‍♂️");
         return;
     }
   };
 
+  /// Gets all current voice connections
+  getVoiceConnetions = () => {
+    let connections = Array.from(Object.entries(this._client.voice.adapters));
+    console.log("Current voice channels:", connections);
+  };
+
   // Connect to voice channel
   connectToVoice = async (channel) => {
     if (!channel || !channel.isVoice()) return null;
+    console.log(this.getVoiceConnetions());
 
     // Check for voice connection
+    console.log("Fetching voice channel in guild:", channel.guild.id);
     let connection = getVoiceConnection(channel.guild.id);
-    if (connection) return connection;
+    if (connection) {
+      // Check for voice connection in command's voice channel
+      if (this._client.voice.adapters[channel.id]) {
+        console.log("Connected to:", channel.id);
+        return connection;
+      }
+      // Destroy current connection
+      console.log("Moving connection to:", channel.id);
+      // Dispose player playing and clear queue in all other channels
+      this.getGuildChannels(channel.guild).forEach((ch, idx) => {
+        if (ch[0] !== channel.id && !ch[1].delted) {
+          this.stopAudioPlayer(ch[0]);
+          this.clearAudioQueue(ch[0]);
+        }
+      });
+      connection.destroy();
+    }
 
-    // Connect to voice channel
+    // Create connection to voice channel
     connection = joinVoiceChannel({
       channelId: channel.id,
       guildId: channel.guild.id,
       adapterCreator: channel.guild.voiceAdapterCreator,
     });
+    console.log("Connected to:", channel.id);
     return connection;
   };
 
@@ -233,7 +261,7 @@ class Bot {
   };
 
   // Creates an audo planyer with error handler
-  getAudioPlayer = () => {
+  createAudioPlayer = () => {
     const player = createAudioPlayer({
       behaviors: {
         noSubscriber: NoSubscriberBehavior.Pause,
@@ -249,6 +277,7 @@ class Bot {
     }
     player.stop();
     this.players[channelId] = null;
+    this.playing[channelId] = null;
     console.log("Stopped and removed player for", channelId);
     return true;
   };
@@ -319,7 +348,7 @@ class Bot {
     resource.volume.setVolume(vol);
 
     // Create audio player
-    let player = this.getAudioPlayer();
+    let player = this.createAudioPlayer();
 
     // Set error handling
     player.on("error", (error) => {
@@ -486,7 +515,8 @@ class Bot {
     const playlist = require(`./playlists/${name}.js`);
     if (playlist) {
       cmd.editReply("Loading tracks...");
-      this.clearAudioQueue(cmd);
+      this.clearAudioQueue(cmdVId(cmd));
+      this.stopAudioPlayer(voiceId);
       await playlist.forEach(async (url, idx) => {
         // Get and validate info
         let info = await ytdl.getInfo(url);
@@ -524,12 +554,8 @@ class Bot {
     cmd.reply(`***Up Next:*** ${nextTracks}`);
   };
 
-  clearAudioQueue = (cmd) => {
-    const voiceId = cmdVId(cmd);
+  clearAudioQueue = (voiceId) => {
     console.log("Clearing Queue for", voiceId);
-    if (this.queue[voiceId]?.length) {
-      Promise.all(this.queue[voiceId].map((item) => item.cmd.deleteReply()));
-    }
     this.queue[voiceId] = [];
   };
 
@@ -543,11 +569,87 @@ class Bot {
     let power = cmd.options.getInteger("level") ?? 1;
     power = power > max ? max * 1000 : power < 1 ? 1000 : power * 1000;
     setTimeout(() => {
-      let emojis = getRandomEmoji(power / 1000);
+      let emojis = getRandomEmoji(
+        power / 1000,
+        this.getGuildEmojis(cmd.member.guild).map((e) => e.toString())
+      );
       cmd.editReply(`🤖 💭 ${emojis}`);
     }, power);
   };
+
+  sendGuildInfo = async (cmd) => {
+    await cmd.deferReply();
+    let guild = cmd.member.guild;
+    console.log(guild);
+    let infoKey = cmd.options.getString("info");
+    switch (infoKey) {
+      case "emojis":
+        let emojis = this.getGuildEmojis(cmd.member.guild).map((e) =>
+          e.toString()
+        );
+        cmd.editReply(
+          emojis.length
+            ? `***Emojis:***\n${emojis.join("\n")}`
+            : "No Guild Emojis"
+        );
+        break;
+      case "owner":
+        let owner = this.getGuildOwner(guild);
+        cmd.editReply(`***${owner.username}*** owns ${guild.name}`);
+        break;
+      case "roles":
+        let reply = Array.from(guild.roles.cache.entries())
+          .filter((r) => r[1].name !== "@everyone")
+          .filter((r) => r[1].name !== "Admin")
+          .map((r) => {
+            return r[1].name;
+          });
+        console.log(reply);
+        cmd.editReply(
+          reply.length ? `***Roles:***\n${reply.join("\n")}` : "no roles"
+        );
+        break;
+      default:
+        cmd.editReply("🤷‍♂️");
+        return;
+    }
+  };
+
+  //////// INFO STUFF
+  // Get Current Guild Info
+  getGuildPreview = async (guild) => {
+    let prv = await this._client.fetchGuildPreview(guild);
+    console.log("Guild Preview", prv);
+    return prv;
+  };
+
+  // Get channels in guild
+  getGuildChannels = (guild, isVoice = true) => {
+    let voiceChannelMap = Array.from(
+      guild.channels._cache.filter((channel) => channel.isVoice() === isVoice)
+    );
+    console.log(
+      `Guild ${!isVoice ? "Text" : "Voice"} Channels:`,
+      voiceChannelMap
+    );
+    return voiceChannelMap;
+  };
+
+  getGuildOwner = (guild) => {
+    let owner = guild.members.cache.get(guild.ownerId);
+    console.log("Guild Owner:", owner.user);
+    return owner?.user;
+  };
+
+  getGuildEmojis = (guild) => {
+    let emojis = Array.from(guild.emojis.cache.entries())
+      .filter((e) => !e.deleted)
+      .map((eArr) => eArr[1]);
+    console.log("Guild Emjois", emojis);
+    return emojis;
+  };
 }
+
 const cmdVId = (cmd) => cmd?.member?.voice?.channel?.id ?? null;
 
 const millisecondsToHuman = (ms) => {
