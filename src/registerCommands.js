@@ -22,7 +22,7 @@ const rest = new REST({ version: "9" }).setToken(token);
     console.log("Started refreshing application (/) commands.");
 
     await rest.put(
-      Routes.applicationGuildCommands(process.env.BOT_ID, process.env.GUILD_B),
+      Routes.applicationGuildCommands(process.env.BOT_ID, process.env.GUILD_A),
       {
         body: commands,
       }

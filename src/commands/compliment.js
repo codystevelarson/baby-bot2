@@ -21,6 +21,12 @@ const data = new SlashCommandBuilder()
   )
   .addStringOption((option) =>
     option.setName("extra").setDescription("Add to what").setRequired(false)
+  )
+  .addBooleanOption((option) =>
+    option
+      .setName("announce")
+      .setDescription("Announce in chat")
+      .setRequired(false)
   );
 
 module.exports = data;

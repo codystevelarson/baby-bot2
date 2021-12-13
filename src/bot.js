@@ -24,7 +24,12 @@ class Bot {
   constructor(token, id) {
     this._token = token;
     this._id = id;
-    this._client = new Discord.Client({
+    this._client = this.createClient();
+  }
+
+  createClient = () => {
+    console.log("Creating client");
+    let client = new Discord.Client({
       intents: [
         Discord.Intents.FLAGS.GUILDS,
         Discord.Intents.FLAGS.GUILD_MESSAGES,
@@ -39,29 +44,50 @@ class Bot {
     });
 
     // Triggers
-    this._client.once("ready", this.onReady);
-    this._client.on("messageCreate", this.onMessage);
-    this._client.on("messageDelete", this.onMessageDelete);
-    this._client.on("typingStart", this.onStartTyping);
-    this._client.on("interactionCreate", this.onInteraction);
-  }
+    console.log("Adding Client Triggers");
+    client.once("ready", this.onReady);
+    client.on("messageCreate", this.onMessage);
+    client.on("messageDelete", this.onMessageDelete);
+    client.on("typingStart", this.onStartTyping);
+    client.on("interactionCreate", this.onInteraction);
+    return client;
+  };
 
   start = () => {
     this.login();
+  };
+
+  refresh = async () => {
+    this.logout();
+    await this.login();
+  };
+
+  reboot = () => {
+    this.players = {};
+    this.playing = {};
+    this.queue = {};
+    this.snitches = [];
+    this.refresh();
   };
 
   login = async () => {
     if (this._token) {
       try {
         await this._client.login(this._token);
-        this._client.setSatus;
+        console.log("Logged in");
       } catch (e) {
+        console.log("Login Failed", e);
         this._client.destroy();
       }
     } else {
       console.log("NO TOKEN");
       this._client.destroy();
     }
+  };
+
+  logout = async () => {
+    this._client.destroy();
+    console.log("Log out complete");
   };
 
   /**
@@ -118,15 +144,52 @@ class Bot {
    * Bot actions on interaction
    * from any text channel Bot has access to
    */
-  onInteraction = (cmd) => {
+  onInteraction = async (cmd) => {
     cmd.isCommand()
       ? console.log("command", cmd.commandName)
       : console.log("not command");
 
     // Text commands
     switch (cmd.commandName) {
+      case "reboot":
+        cmd.reply("Rebooting 🔌🤖👋");
+        this.reboot();
+        return;
+      case "refresh":
+        cmd.reply("Refreshing ♻🤖👋");
+        this.refresh();
+        return;
+      case "roll":
+        this.roll(cmd);
+        return;
       case "think":
         this.think(cmd);
+        return;
+      case "compliment":
+        let toUser = cmd.options.getUser("user") ?? cmd.member.user;
+        let sender = cmd.member.user;
+        let isSender = toUser == sender;
+        let what = cmd.options.getString("what");
+        let extra = cmd.options.getString("extra");
+        let announce = cmd.options.getBoolean("announce") ?? false;
+        let reply = announce
+          ? `Hey ${toUser.toString()}, `
+          : `Telling ${toUser.toString()}: `;
+        let compliment = `nice ${
+          !what ? "brain" : what === "other" ? "" : what
+        } ${extra ?? ""}`;
+
+        console.log("Replying", `${reply}${compliment}`, announce);
+        cmd.reply({
+          content: `${reply}${compliment}`,
+          ephemeral: !announce,
+        });
+
+        toUser.send(
+          `${
+            isSender ? "You" : `${sender.username} thinks you`
+          } have ${compliment}`
+        );
         return;
       case "snitch":
         let user = cmd.options.getUser("user");
@@ -199,6 +262,12 @@ class Bot {
         return;
       case "queue":
         this.getQueue(cmd);
+        return;
+      case "hfm":
+        this.playRndFromPlaylist(cmd, "haircutsformen");
+        return;
+      case "loading":
+        this.playRndFromPlaylist(cmd, "loading");
         return;
       default:
         cmd.reply("🤷‍♂️");
@@ -538,6 +607,33 @@ class Bot {
     cmd.editReply("🤷‍♂️📃");
   };
 
+  playRndFromPlaylist = async (cmd, name) => {
+    await cmd.deferReply();
+    let voiceId = cmdVId(cmd);
+    // Static files
+    const playlist = require(`./playlists/${name}.js`);
+    if (playlist) {
+      cmd.editReply("Loading tracks...");
+      this.clearAudioQueue(cmdVId(cmd));
+      this.stopAudioPlayer(voiceId);
+      let trackId = Math.floor(Math.random() * playlist.length);
+      // Get and validate info
+      let info = await ytdl.getInfo(playlist[trackId]);
+      if (!info) {
+        cmd.editReply({
+          content: "Couldn't find video info",
+          ephemeral: true,
+        });
+        return;
+      }
+      this.queueAudio(cmd, playlist[trackId], info, true);
+      this.playNext(voiceId);
+
+      return;
+    }
+    cmd.editReply("🤷‍♂️📃");
+  };
+
   getQueue = (cmd) => {
     let queue = this.queue[cmdVId(cmd)];
     if (!queue?.length) {
@@ -648,6 +744,26 @@ class Bot {
     console.log("Guild Emjois", emojis);
     return emojis;
   };
+
+  roll(cmd) {
+    let max = cmd.options.getInteger("max_value") ?? 6;
+    let dice = cmd.options.getInteger("num_dice") ?? 1;
+    let msg = `**Rolling ${dice} 🎲 ${max !== 6 ? `${max} sided ` : ""}${
+      dice > 1 ? "dice" : "die"
+    }**`;
+    console.log(msg);
+    cmd.reply(msg);
+    let roll = [];
+    while (dice > 0) {
+      roll.push(Math.floor(Math.random() * max + 1));
+      dice--;
+    }
+    console.log("Rolled", roll.join(", "));
+    setTimeout(
+      () => cmd.followUp(`🎲 ***${roll.join("*** 🎲 ***")}*** 🎲`),
+      1500
+    );
+  }
 }
 
 const cmdVId = (cmd) => cmd?.member?.voice?.channel?.id ?? null;
